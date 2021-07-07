@@ -35,6 +35,7 @@ kvepoch_t global_wake_epoch;
 struct timeval log_epoch_interval;
 static struct timeval log_epoch_time;
 extern Masstree::default_table* tree;
+extern volatile bool recovering;
 
 kvepoch_t rec_ckp_min_epoch;
 kvepoch_t rec_ckp_max_epoch;
@@ -202,6 +203,12 @@ loginfo::~loginfo() {
     free(buf_);
 }
 
+void* loginfo::trampoline(void* x) {
+    loginfo* li = reinterpret_cast<loginfo*>(x);
+    li->ti_->pthread() = pthread_self();
+    return li->run();
+}
+
 void loginfo::initialize(const String& logfile) {
     assert(!ti_);
 
@@ -210,7 +217,7 @@ void loginfo::initialize(const String& logfile) {
     f_.filename_.ref();
 
     ti_ = threadinfo::make(threadinfo::TI_LOG, logindex_);
-    int r = ti_->run(logger_trampoline, this);
+    int r = pthread_create(&ti_->pthread(), 0, trampoline, this);
     always_assert(r == 0);
 }
 
@@ -279,11 +286,6 @@ void* loginfo::run() {
     }
 
     return 0;
-}
-
-void* loginfo::logger_trampoline(threadinfo* ti) {
-    loginfo* li = static_cast<loginfo*>(ti->thread_data());
-    return li->run();
 }
 
 
@@ -499,7 +501,7 @@ void logrecord::run(T& table, std::vector<lcdf::Json>& jrepo, threadinfo& ti) {
     typename T::cursor_type lp(table, key);
     bool found = lp.find_insert(ti);
     if (!found)
-        ti.advance_timestamp(lp.node_timestamp());
+        ti.observe_phantoms(lp.node());
     apply(lp.value(), found, jrepo, ti);
     lp.finish(1, ti);
 }
@@ -736,6 +738,7 @@ logreplay::replayandclean1(kvepoch_t min_epoch, kvepoch_t max_epoch,
                         "replay %s: %" PRIu64 " entries replayed\n",
                         filename_.c_str(), nr);
         }
+        // XXX RCU
         pos = nextpos;
     }
 

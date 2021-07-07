@@ -88,10 +88,6 @@ class key {
     int length() const {
         return len_;
     }
-    /** @brief Return the maxkey's length, bounded above by ikey_size + 1. */
-    int ikeylen() const {
-        return std::min(length(), (int) ikey_size + 1);
-    }
     /** @brief Test whether this key has a suffix (length() > ikey_size). */
     bool has_suffix() const {
         return len_ > ikey_size;
@@ -112,6 +108,13 @@ class key {
     void shift() {
         s_ += ikey_size;
         len_ -= ikey_size;
+        ikey0_ = string_slice<ikey_type>::make_comparable_sloppy(s_, len_);
+    }
+    /** @brief Shift this key forward to model the current key's suffix.
+        @pre has_suffix() */
+    void shift_by(int delta) {
+        s_ += delta;
+        len_ -= delta;
         ikey0_ = string_slice<ikey_type>::make_comparable_sloppy(s_, len_);
     }
     /** @brief Test whether this key has been shifted by shift(). */
@@ -138,6 +141,9 @@ class key {
         }
         return cmp;
     }
+    int compare(const key<I>& x) const {
+        return compare(x.ikey(), x.length());
+    }
 
     int unparse(char* data, int datalen) const {
         int cplen = std::min(len_, datalen);
@@ -152,14 +158,21 @@ class key {
         return s;
     }
     int unparse_printable(char* data, int datalen) const {
-        String s = unparse().printable();
+        String s = unparse_printable();
         int cplen = std::min(s.length(), datalen);
         memcpy(data, s.data(), cplen);
         return cplen;
     }
+    String unparse_printable() const {
+        return unparse().printable();
+    }
     static String unparse_ikey(ikey_type ikey) {
         key<ikey_type> k(ikey);
         return k.unparse();
+    }
+    static String unparse_printable_ikey(ikey_type ikey) {
+        key<ikey_type> k(ikey);
+        return k.unparse_printable();
     }
 
     // used during scan
@@ -224,34 +237,6 @@ class key {
 template <typename I> constexpr int key<I>::ikey_size;
 
 } // namespace Masstree
-
-template <typename P>
-inline int key_compare(typename P::ikey_type a,
-                       const Masstree::internode<P>& b, int bp)
-{
-    return compare(a, b.ikey(bp));
-}
-
-template <typename P>
-inline int key_compare(const Masstree::key<typename P::ikey_type>& a,
-                       const Masstree::internode<P>& b, int bp)
-{
-    return compare(a.ikey(), b.ikey(bp));
-}
-
-template <typename P>
-inline int key_compare(const Masstree::key<typename P::ikey_type>& a,
-                       const Masstree::leaf<P>& b, int bp)
-{
-    return a.compare(b.ikey(bp), b.keylenx_[bp]);
-}
-
-template <typename I>
-inline int key_compare(const Masstree::key<I>& a,
-                       const Masstree::key<I>& b)
-{
-    return a.compare(b.ikey(), b.length());
-}
 
 template <typename I>
 inline std::ostream& operator<<(std::ostream& stream,

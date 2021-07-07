@@ -32,9 +32,7 @@ class String : public String_base<String> {
 
     inline String();
     inline String(const String &x);
-#if HAVE_CXX_RVALUE_REFERENCES
     inline String(String &&x);
-#endif
     template <typename T>
     explicit inline String(const String_base<T>& str);
     inline String(const char* cstr);
@@ -80,8 +78,8 @@ class String : public String_base<String> {
     inline String fast_substring(const char* first, const char* last) const;
     inline String fast_substring(const unsigned char* first,
                                  const unsigned char* last) const;
-    String substring(int pos, int len) const;
-    inline String substring(int pos) const;
+    String substr(int pos, int len) const;
+    inline String substr(int pos) const;
     String ltrim() const;
     String rtrim() const;
     String trim() const;
@@ -117,19 +115,18 @@ class String : public String_base<String> {
     using String_base<String>::decode_base64;
     String decode_base64() const;
 
+    using String_base<String>::encode_uri_component;
+    String encode_uri_component() const;
+
     inline String& operator=(const String& x);
-#if HAVE_CXX_RVALUE_REFERENCES
     inline String& operator=(String&& x);
-#endif
     template <typename T>
     inline String& operator=(const String_base<T>& str);
     inline String& operator=(const char* cstr);
     inline String& operator=(const std::string& str);
 
     inline void assign(const String& x);
-#if HAVE_CXX_RVALUE_REFERENCES
     inline void assign(String&& x);
-#endif
     template <typename T>
     inline void assign(const String_base<T>& str);
     inline void assign(const char* cstr);
@@ -364,13 +361,11 @@ inline String::String(const String& x)
     _r.ref();
 }
 
-#if HAVE_CXX_RVALUE_REFERENCES
 /** @brief Move-construct a String from @a x. */
 inline String::String(String &&x)
     : _r(x._r) {
     x._r.reset_ref();
 }
-#endif
 
 /** @brief Construct a copy of the string @a str. */
 template <typename T>
@@ -396,12 +391,18 @@ inline String::String(const char* cstr) {
     then takes @c strlen(@a s) characters.
     @return A String containing @a len characters of @a s. */
 inline String::String(const char* s, int len) {
-    assign(s, len, false);
+    if (LCDF_CONSTANT_CSTR(s))
+        _r.assign(s, len, 0);
+    else
+        assign(s, len, false);
 }
 
 /** @overload */
 inline String::String(const unsigned char* s, int len) {
-    assign(reinterpret_cast<const char*>(s), len, false);
+    if (LCDF_CONSTANT_CSTR(reinterpret_cast<const char*>(s)))
+        _r.assign(reinterpret_cast<const char*>(s), len, 0);
+    else
+        assign(reinterpret_cast<const char*>(s), len, false);
 }
 
 /** @brief Construct a String containing the characters from @a first
@@ -422,7 +423,7 @@ inline String::String(const unsigned char* first, const unsigned char* last) {
 }
 
 /** @brief Construct a String from a std::string. */
-inline String::String(const std::string &str) {
+inline String::String(const std::string& str) {
     assign(str.data(), str.length(), false);
 }
 
@@ -440,7 +441,7 @@ inline String::String(char c) {
 
 /** @overload */
 inline String::String(unsigned char c) {
-    assign(reinterpret_cast<char *>(&c), 1, false);
+    assign(reinterpret_cast<char*>(&c), 1, false);
 }
 
 inline String::String(const rep_type& r)
@@ -611,10 +612,10 @@ inline String String::fast_substring(const unsigned char* first, const unsigned 
     this should be considered a programming error; a future version may
     generate a warning for this case).
 
-    @note String::substring() is intended to behave like Perl's
+    @note String::substr() is intended to behave like Perl's
     substr(). */
-inline String String::substring(int pos) const {
-    return substring((pos <= -_r.length ? 0 : pos), _r.length);
+inline String String::substr(int pos) const {
+    return substr((pos <= -_r.length ? 0 : pos), _r.length);
 }
 
 inline void String::assign(const rep_type& rep) {
@@ -634,7 +635,6 @@ inline String& String::operator=(const String& x) {
     return *this;
 }
 
-#if HAVE_CXX_RVALUE_REFERENCES
 /** @brief Move-assign this string to @a x. */
 inline void String::assign(String&& x) {
     deref();
@@ -647,7 +647,6 @@ inline String& String::operator=(String&& x) {
     assign(std::move(x));
     return *this;
 }
-#endif
 
 /** @brief Assign this string to the C string @a cstr. */
 inline void String::assign(const char* cstr) {
@@ -700,13 +699,13 @@ inline void String::swap(String &x) {
 }
 
 /** @brief Append @a x to this string. */
-inline void String::append(const String &x) {
+inline void String::append(const String& x) {
     append(x.data(), x.length(), x._r.memo());
 }
 
 /** @brief Append the null-terminated C string @a cstr to this string.
     @param cstr data to append */
-inline void String::append(const char *cstr) {
+inline void String::append(const char* cstr) {
     if (LCDF_CONSTANT_CSTR(cstr))
         append(cstr, strlen(cstr), absent_memo());
     else
@@ -718,14 +717,14 @@ inline void String::append(const char *cstr) {
     @param len length of data
 
     If @a len @< 0, treats @a s as a null-terminated C string. */
-inline void String::append(const char *s, int len) {
+inline void String::append(const char* s, int len) {
     append(s, len, absent_memo());
 }
 
 /** @brief Appends the data from @a first to @a last to this string.
 
     Does nothing if @a first @>= @a last. */
-inline void String::append(const char *first, const char *last) {
+inline void String::append(const char* first, const char* last) {
     if (first < last)
         append(first, last - first);
 }
@@ -738,14 +737,14 @@ inline void String::append(const unsigned char* first,
 
 /** @brief Append @a x to this string.
     @return *this */
-inline String &String::operator+=(const String &x) {
+inline String& String::operator+=(const String &x) {
     append(x.data(), x.length(), x._r.memo());
     return *this;
 }
 
 /** @brief Append the null-terminated C string @a cstr to this string.
     @return *this */
-inline String &String::operator+=(const char *cstr) {
+inline String& String::operator+=(const char* cstr) {
     append(cstr);
     return *this;
 }
@@ -797,9 +796,9 @@ inline void String::shrink_to_fit() {
         *this = String(_r.data, _r.data + _r.length);
 }
 
-/** @brief Return the unsigned char * version of mutable_data(). */
-inline unsigned char *String::mutable_udata() {
-    return reinterpret_cast<unsigned char *>(mutable_data());
+/** @brief Return the unsigned char* version of mutable_data(). */
+inline unsigned char* String::mutable_udata() {
+    return reinterpret_cast<unsigned char*>(mutable_data());
 }
 
 /** @brief Return a const reference to a canonical out-of-memory String. */
@@ -811,14 +810,14 @@ inline const String &String::make_out_of_memory() {
     @pre @a first @< @a last
 
     If @a first doesn't point at a valid UTF-8 character, returns @a first. */
-inline const char *String::skip_utf8_char(const char *first, const char *last) {
-    return reinterpret_cast<const char *>(
-        skip_utf8_char(reinterpret_cast<const unsigned char *>(first),
-                       reinterpret_cast<const unsigned char *>(last)));
+inline const char* String::skip_utf8_char(const char* first, const char* last) {
+    return reinterpret_cast<const char*>(
+        skip_utf8_char(reinterpret_cast<const unsigned char*>(first),
+                       reinterpret_cast<const unsigned char*>(last)));
 }
 
-inline const unsigned char *String::skip_utf8_bom(const unsigned char *first,
-                                                  const unsigned char *last) {
+inline const unsigned char* String::skip_utf8_bom(const unsigned char* first,
+                                                  const unsigned char* last) {
     if (last - first >= 3
         && first[0] == 0xEF && first[1] == 0xBB && first[2] == 0xBF)
         return first + 3;
@@ -826,10 +825,10 @@ inline const unsigned char *String::skip_utf8_bom(const unsigned char *first,
         return first;
 }
 
-inline const char *String::skip_utf8_bom(const char *first, const char *last) {
-    return reinterpret_cast<const char *>(
-        skip_utf8_bom(reinterpret_cast<const unsigned char *>(first),
-                      reinterpret_cast<const unsigned char *>(last)));
+inline const char* String::skip_utf8_bom(const char* first, const char* last) {
+    return reinterpret_cast<const char*>(
+        skip_utf8_bom(reinterpret_cast<const unsigned char*>(first),
+                      reinterpret_cast<const unsigned char*>(last)));
 }
 
 
@@ -837,19 +836,19 @@ inline const char *String::skip_utf8_bom(const char *first, const char *last) {
     @brief Concatenate the operands and return the result.
 
     At most one of the two operands can be a null-terminated C string. */
-inline String operator+(String a, const String &b) {
+inline String operator+(String a, const String& b) {
     a += b;
     return a;
 }
 
 /** @relates String */
-inline String operator+(String a, const char *b) {
+inline String operator+(String a, const char* b) {
     a.append(b);
     return a;
 }
 
 /** @relates String */
-inline String operator+(const char *a, const String &b) {
+inline String operator+(const char* a, const String& b) {
     String s1(a);
     s1 += b;
     return s1;
@@ -865,7 +864,7 @@ inline String operator+(String a, char b) {
 }
 
 #if HAVE_CXX_USER_LITERALS
-inline String operator"" _S(const char *s, size_t len) {
+inline String operator"" _S(const char* s, size_t len) {
     return String::make_stable(s, s + len);
 }
 #endif

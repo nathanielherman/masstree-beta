@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <limits.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -43,6 +44,7 @@
 #include "clp.h"
 
 const char *serverip = "127.0.0.1";
+static Json test_param;
 
 typedef void (*get_async_cb)(struct child *c, struct async *a,
                              bool has_val, const Str &val);
@@ -191,6 +193,9 @@ struct kvtest_client {
     int prefixLen() const {
         return ::prefixLen;
     }
+    Json param(const String& name, Json default_value = Json()) {
+        return test_param.count(name) ? test_param.at(name) : default_value;
+    }
     double now() const {
         return ::now();
     }
@@ -328,7 +333,7 @@ struct kvtest_client {
     void notice(String s) {
         if (!quiet) {
             if (!s.empty() && s.back() == '\n')
-                s = s.substring(0, -1);
+                s = s.substr(0, -1);
             if (s.empty() || isspace((unsigned char) s[0]))
                 fprintf(stderr, "%d%.*s\n", c_->childno, s.length(), s.data());
             else
@@ -348,27 +353,31 @@ struct kvtest_client {
             va_end(val);
         }
     }
-    void report(const Json &result) {
+    const Json& report(const Json& x) {
+        return report_.merge(x);
+    }
+    void finish() {
         if (!quiet) {
             lcdf::StringAccum sa;
             double dv;
-            if (result.count("puts"))
-                sa << " total " << result.get("puts");
-            if (result.get("puts_per_sec", dv))
+            if (report_.count("puts"))
+                sa << " total " << report_.get("puts");
+            if (report_.get("puts_per_sec", dv))
                 sa.snprintf(100, " %.0f put/s", dv);
-            if (result.get("gets_per_sec", dv))
+            if (report_.get("gets_per_sec", dv))
                 sa.snprintf(100, " %.0f get/s", dv);
             if (!sa.empty())
                 notice(sa.take_string());
         }
-        printf("%s\n", result.unparse().c_str());
+        printf("%s\n", report_.unparse().c_str());
     }
     kvrandom_random rand;
     struct child *c_;
+    Json report_;
 };
 
 
-#define TESTRUNNER_SIGNATURE kvtest_client& client
+#define TESTRUNNER_CLIENT_TYPE kvtest_client&
 #include "testrunner.hh"
 
 MAKE_TESTRUNNER(rw1, kvtest_rw1(client));
@@ -558,19 +567,36 @@ main(int argc, char *argv[])
           getratio = clp->val.i;
           break;
       case opt_minkeyletter:
+          assert(strlen(clp->vstr) == 1);
           minkeyletter = clp->vstr[0];
           break;
       case opt_maxkeyletter:
+          assert(strlen(clp->vstr) == 1);
           maxkeyletter = clp->vstr[0];
           break;
       case opt_nofork:
           dofork = !clp->negated;
           break;
-      case Clp_NotOption:
-          test = testrunner::find(clp->vstr);
-          if (!test)
-              usage();
+      case Clp_NotOption: {
+          // check for parameter setting
+          if (const char* eqchr = strchr(clp->vstr, '=')) {
+              Json& param = test_param[String(clp->vstr, eqchr)];
+              const char* end_vstr = clp->vstr + strlen(clp->vstr);
+              if (param.assign_parse(eqchr + 1, end_vstr)) {
+                  // OK, param was valid JSON
+              } else if (eqchr[1] != 0) {
+                  param = String(eqchr + 1, end_vstr);
+              } else {
+                  param = Json();
+              }
+          } else {
+              test = testrunner::find(clp->vstr);
+              if (!test) {
+                  usage();
+              }
+          }
           break;
+      }
       case Clp_BadOption:
           usage();
           break;

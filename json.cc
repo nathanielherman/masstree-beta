@@ -114,7 +114,7 @@ void Json::ObjectJson::grow(bool copy)
         else if (copy)
             new((void*) oi) ObjectItem(ob->v_.first, ob->v_.second, ob->next_);
         else
-            memcpy(oi, ob, sizeof(ObjectItem));
+            memcpy((void*) oi, ob, sizeof(ObjectItem));
     }
     if (!copy)
         operator delete[](reinterpret_cast<void *>(os_));
@@ -265,7 +265,8 @@ void Json::hard_uniqueify_array(bool convert, int ncap_in) {
                 if (i >= unsigned(u_.a.x->capacity))
                     hard_uniqueify_array(false, i + 1);
                 if (i >= unsigned(u_.a.x->size)) {
-                    memset(&u_.a.x->a[u_.a.x->size], 0, sizeof(Json) * (i + 1 - u_.a.x->size));
+                    memset(&u_.a.x->a[u_.a.x->size].u_, 0,
+                           sizeof(Json) * (i + 1 - u_.a.x->size));
                     u_.a.x->size = i + 1;
                 }
                 u_.a.x->a[i] = ob->v_.second;
@@ -340,7 +341,8 @@ void* Json::uniqueify_array_insert(bool convert, size_type pos) {
         pos = size;
     precondition(pos >= 0 && pos <= size);
     if (pos != size)
-        memmove(&u_.a.x->a[pos + 1], &u_.a.x->a[pos], (size - pos) * sizeof(Json));
+        memmove(&u_.a.x->a[pos + 1].u_, &u_.a.x->a[pos].u_,
+                (size - pos) * sizeof(Json));
     ++u_.a.x->size;
     return (void*) &u_.a.x->a[pos];
 }
@@ -354,7 +356,7 @@ Json::array_iterator Json::erase(array_iterator first, array_iterator last) {
         for (size_type pos = fpos; pos != lpos; ++pos)
             u_.a.x->a[pos].~Json();
         if (lpos != size)
-            memmove(&u_.a.x->a[fpos], &u_.a.x->a[lpos],
+            memmove(&u_.a.x->a[fpos].u_, &u_.a.x->a[lpos].u_,
                     (size - lpos) * sizeof(Json));
         u_.a.x->size -= lpos - fpos;
     }
@@ -531,7 +533,8 @@ Json& Json::hard_get_insert(size_type x) {
     else {
         uniqueify_array(true, x + 1);
         if (u_.a.x->size <= x) {
-            memset(&u_.a.x->a[u_.a.x->size], 0, sizeof(Json) * (x + 1 - u_.a.x->size));
+            memset(&u_.a.x->a[u_.a.x->size].u_, 0,
+                   sizeof(Json) * (x + 1 - u_.a.x->size));
             u_.a.x->size = x + 1;
         }
         return u_.a.x->a[x];
@@ -574,10 +577,12 @@ bool Json::unparse_is_complex() const {
         }
     } else if (is_array()) {
         if (ArrayJson *aj = ajson()) {
-            if (aj->size > 8)
+            if (aj->size > 1024)
                 return true;
             for (Json* it = aj->a; it != aj->a + aj->size; ++it)
-                if (!it->empty() && !it->is_primitive())
+                if (!it->empty()
+                    && (!it->is_primitive()
+                        || (it->is_string() && it - aj->a >= 4 && it->as_s().length() > 40)))
                     return true;
         }
     }
@@ -600,52 +605,56 @@ const char* const upx_separated[] = {": ", ", "};
 
 void Json::hard_unparse(StringAccum &sa, const unparse_manipulator &m, int depth) const
 {
-    bool expanded;
-    const char* const* upx;
     if (is_object() || is_array()) {
-        expanded = depth < m.indent_depth() && unparse_is_complex();
-        upx = expanded ? upx_expanded : (m.space_separator() ? upx_separated : upx_normal);
-    }
+        bool expanded = depth < m.indent_depth() && unparse_is_complex();
+        const char* const* upx;
+        if (expanded)
+            upx = upx_expanded;
+        else if (m.space_separator())
+            upx = upx_separated;
+        else
+            upx = upx_normal;
 
-    if (is_object() && !u_.x.x)
-        sa << "{}";
-    else if (is_object()) {
-        sa << '{';
-        bool rest = false;
-        ObjectJson *oj = ojson();
-        ObjectItem *ob = oj->os_, *oe = ob + oj->n_;
-        for (; ob != oe; ++ob)
-            if (ob->next_ > -2) {
+        if (is_object() && !u_.x.x)
+            sa << "{}";
+        else if (is_object()) {
+            sa << '{';
+            bool rest = false;
+            ObjectJson *oj = ojson();
+            ObjectItem *ob = oj->os_, *oe = ob + oj->n_;
+            for (; ob != oe; ++ob)
+                if (ob->next_ > -2) {
+                    if (rest)
+                        sa << upx[1];
+                    if (expanded)
+                        unparse_indent(sa, m, depth + 1);
+                    sa << '\"';
+                    ob->v_.first.encode_json(sa);
+                    sa << '\"' << upx[0];
+                    ob->v_.second.hard_unparse(sa, m, depth + 1);
+                    rest = true;
+                }
+            if (expanded)
+                unparse_indent(sa, m, depth);
+            sa << '}';
+        } else if (!u_.x.x)
+            sa << "[]";
+        else {
+            sa << '[';
+            bool rest = false;
+            ArrayJson* aj = ajson();
+            for (Json* it = aj->a; it != aj->a + aj->size; ++it) {
                 if (rest)
                     sa << upx[1];
                 if (expanded)
                     unparse_indent(sa, m, depth + 1);
-                sa << '\"';
-                ob->v_.first.encode_json(sa);
-                sa << '\"' << upx[0];
-                ob->v_.second.hard_unparse(sa, m, depth + 1);
+                it->hard_unparse(sa, m, depth + 1);
                 rest = true;
             }
-        if (expanded)
-            unparse_indent(sa, m, depth);
-        sa << '}';
-    } else if (is_array() && !u_.x.x)
-        sa << "[]";
-    else if (is_array()) {
-        sa << '[';
-        bool rest = false;
-        ArrayJson* aj = ajson();
-        for (Json* it = aj->a; it != aj->a + aj->size; ++it) {
-            if (rest)
-                sa << upx[1];
             if (expanded)
-                unparse_indent(sa, m, depth + 1);
-            it->hard_unparse(sa, m, depth + 1);
-            rest = true;
+                unparse_indent(sa, m, depth);
+            sa << ']';
         }
-        if (expanded)
-            unparse_indent(sa, m, depth);
-        sa << ']';
     } else if (u_.x.type == j_null && !u_.x.x)
         sa.append("null", 4);
     else if (u_.x.type <= 0) {

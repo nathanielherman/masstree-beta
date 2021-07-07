@@ -15,7 +15,7 @@
  */
 #ifndef MASSTREE_TCURSOR_HH
 #define MASSTREE_TCURSOR_HH 1
-#include "local_vector.hh"
+#include "small_vector.hh"
 #include "masstree_key.hh"
 #include "masstree_struct.hh"
 namespace Masstree {
@@ -29,6 +29,7 @@ class unlocked_tcursor {
     typedef typename P::threadinfo_type threadinfo;
     typedef typename leaf<P>::nodeversion_type nodeversion_type;
     typedef typename nodeversion_type::value_type nodeversion_value_type;
+    typedef typename leaf<P>::permuter_type permuter_type;
 
     inline unlocked_tcursor(const basic_table<P>& table, Str str)
         : ka_(str), lv_(leafvalue<P>::make_empty()),
@@ -67,6 +68,12 @@ class unlocked_tcursor {
     inline leaf<P>* node() const {
         return n_;
     }
+    inline permuter_type permutation() const {
+        return perm_;
+    }
+    inline int compare_key(const key_type& a, int bp) const {
+        return n_->compare_key(a, bp);
+    }
     inline nodeversion_value_type full_version_value() const {
         static_assert(int(nodeversion_type::traits_type::top_stable_bits) >= int(leaf<P>::permuter_type::size_bits), "not enough bits to add size to version");
         return (v_.version_value() << leaf<P>::permuter_type::size_bits) + perm_.size();
@@ -76,12 +83,9 @@ class unlocked_tcursor {
     leaf<P>* n_;
     key_type ka_;
     typename leaf<P>::nodeversion_type v_;
-    typename leaf<P>::permuter_type perm_;
+    permuter_type perm_;
     leafvalue<P> lv_;
     const node_base<P>* root_;
-
-    inline int lower_bound_binary() const;
-    inline int lower_bound_linear() const;
 };
 
 template <typename P>
@@ -99,7 +103,7 @@ class tcursor {
     typedef typename nodeversion_type::value_type nodeversion_value_type;
     typedef typename P::threadinfo_type threadinfo;
     static constexpr int new_nodes_size = 1; // unless we make a new trie newnodes will have at most 1 item
-    typedef local_vector<std::pair<leaf_type*, nodeversion_value_type>, new_nodes_size> new_nodes_type;
+    typedef small_vector<std::pair<leaf_type*, nodeversion_value_type>, new_nodes_size> new_nodes_type;
 
     tcursor(basic_table<P>& table, Str str)
         : ka_(str), root_(table.fix_root()) {
@@ -118,10 +122,10 @@ class tcursor {
     }
 
     inline bool has_value() const {
-        return kp_ >= 0;
+        return kx_.p >= 0;
     }
-    inline value_type &value() const {
-        return n_->lv_[kp_].value();
+    inline value_type& value() const {
+        return n_->lv_[kx_.p].value();
     }
 
     inline bool is_first_layer() const {
@@ -131,14 +135,8 @@ class tcursor {
     inline leaf<P>* node() const {
         return n_;
     }
-    inline kvtimestamp_t node_timestamp() const {
-        return n_->node_ts_;
-    }
-    inline kvtimestamp_t &node_timestamp() {
-        return n_->node_ts_;
-    }
 
-    inline leaf_type *original_node() const {
+    inline leaf_type* original_node() const {
         return original_n_;
     }
 
@@ -163,14 +161,13 @@ class tcursor {
     inline nodeversion_value_type next_full_version_value(int state) const;
 
   private:
-    leaf_type *n_;
+    leaf_type* n_;
     key_type ka_;
-    int ki_;
-    int kp_;
+    key_indexed_position kx_;
     node_base<P>* root_;
     int state_;
 
-    leaf_type *original_n_;
+    leaf_type* original_n_;
     nodeversion_value_type original_v_;
     nodeversion_value_type updated_v_;
     new_nodes_type new_nodes_;
@@ -180,23 +177,14 @@ class tcursor {
         return root_;
     }
 
-    inline node_type* get_leaf_locked(node_type* root, nodeversion_type& v, threadinfo& ti);
-    inline node_type* check_leaf_locked(node_type* root, nodeversion_type v, threadinfo& ti);
-    inline node_type* check_leaf_insert(node_type* root, nodeversion_type v, threadinfo& ti);
-    node_type* check_leaf_new_layer(nodeversion_type v, threadinfo& ti);
-    static inline node_type* insert_marker() {
-        return reinterpret_cast<node_type*>(uintptr_t(1));
-    }
-    static inline node_type* found_marker() {
-        return reinterpret_cast<node_type*>(uintptr_t(0));
-    }
-
-    node_type* finish_split(threadinfo& ti);
+    bool make_new_layer(threadinfo& ti);
+    bool make_split(threadinfo& ti);
+    friend class leaf<P>;
     inline void finish_insert();
     inline bool finish_remove(threadinfo& ti);
 
-    static void collapse(internode_type* p, ikey_type ikey,
-                         node_type* root, Str prefix, threadinfo& ti);
+    static void redirect(internode_type* n, ikey_type ikey,
+                         ikey_type replacement, threadinfo& ti);
     /** Remove @a leaf from the Masstree rooted at @a rootp.
      * @param prefix String defining the path to the tree containing this leaf.
      *   If removing a leaf in layer 0, @a prefix is empty.
